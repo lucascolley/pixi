@@ -15,7 +15,8 @@ use rattler_virtual_packages::{VirtualPackage, VirtualPackageOverrides};
 use reqwest_middleware::ClientWithMiddleware;
 use uv_configuration::RAYON_INITIALIZE;
 
-use super::cli_config::ChannelsConfig;
+use super::cli_config::{ChannelsConfig, PrefixUpdateConfig, WorkspaceConfig};
+use super::list;
 use crate::prefix::Prefix;
 
 /// Run a command in a temporary environment.
@@ -42,6 +43,9 @@ pub struct Args {
     /// exists.
     #[clap(long)]
     pub force_reinstall: bool,
+
+    #[clap(long = "list", visible_alias = "ls", num_args = 0..=1, default_missing_value = "")]
+    pub list: Option<String>,
 
     #[clap(flatten)]
     pub config: ConfigCli,
@@ -211,6 +215,32 @@ pub async fn create_exec_prefix(
         .context("failed to create environment")?;
 
     write_guard.finish().await.into_diagnostic()?;
+
+    // If `--list` was passed, invoke a simple `pixi list` in the environment
+    if let Some(regex) = args.list.clone() {
+        let regex = {
+            if !regex.is_empty() {
+                Some(regex)
+            } else {
+                None
+            }
+        };
+        let cmd = list::Args {
+            regex,
+            environment: Some("".to_string()),
+            explicit: false,
+            json: false,
+            json_pretty: false,
+            platform: Some(args.platform),
+            prefix_update_config: PrefixUpdateConfig::default(),
+            sort_by: list::SortBy::Name,
+            workspace_config: WorkspaceConfig::default(),
+        };
+        await_in_progress("listing packages", move |_| list::execute(cmd))
+            .await
+            .context("failed to list packages")?;
+    }
+
     Ok(prefix)
 }
 

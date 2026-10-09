@@ -12,7 +12,7 @@ use rattler_conda_types::{GenericVirtualPackage, Subdir};
 
 use pixi_manifest::platform::{
     PixiPlatform,
-    host::{detect_host, host_subdir},
+    host::{detect_host_with_capabilities, host_subdir},
 };
 
 /// The machine's capabilities are unknown because host detection failed.
@@ -27,6 +27,9 @@ pub struct HostUndetected {
 pub struct HostDetection {
     subdir: Subdir,
     platform: Result<PixiPlatform, HostUndetected>,
+    /// What the machine provides. Kept apart from `platform` because the
+    /// platform model cannot spell "this subdir minus one of its defaults".
+    capabilities: Vec<GenericVirtualPackage>,
 }
 
 impl HostDetection {
@@ -39,13 +42,23 @@ impl HostDetection {
     /// Detects what this machine provides for `subdir`. For a subdir the
     /// machine cannot run, that is the subdir's baseline.
     pub fn builtin_for(subdir: Subdir) -> Self {
-        let platform = detect_host(subdir).map_err(|error| {
-            tracing::warn!("Could not detect the virtual packages of this machine: {error}");
-            HostUndetected {
-                message: error.to_string(),
+        match detect_host_with_capabilities(subdir) {
+            Ok((platform, capabilities)) => Self {
+                subdir,
+                platform: Ok(platform),
+                capabilities,
+            },
+            Err(error) => {
+                tracing::warn!("Could not detect the virtual packages of this machine: {error}");
+                Self {
+                    subdir,
+                    platform: Err(HostUndetected {
+                        message: error.to_string(),
+                    }),
+                    capabilities: Vec::new(),
+                }
             }
-        });
-        Self { subdir, platform }
+        }
     }
 
     /// Runs [`Self::builtin`] off the async executor.
@@ -57,6 +70,7 @@ impl HostDetection {
                 platform: Err(HostUndetected {
                     message: format!("detection was interrupted: {error}"),
                 }),
+                capabilities: Vec::new(),
             },
         }
     }
@@ -65,6 +79,7 @@ impl HostDetection {
     pub fn from_platform(platform: PixiPlatform) -> Self {
         Self {
             subdir: platform.subdir(),
+            capabilities: platform.declared_virtual_packages().to_vec(),
             platform: Ok(platform),
         }
     }
@@ -86,9 +101,6 @@ impl HostDetection {
     /// fails closed: no declared platform's requirements are met, rather than
     /// pixi assuming its defaults for a machine it could not read.
     pub fn capabilities(&self) -> &[GenericVirtualPackage] {
-        match &self.platform {
-            Ok(platform) => platform.declared_virtual_packages(),
-            Err(_) => &[],
-        }
+        &self.capabilities
     }
 }

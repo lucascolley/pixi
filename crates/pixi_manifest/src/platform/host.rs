@@ -302,12 +302,20 @@ pub fn host_baseline() -> PixiPlatform {
 /// a rich platform, because a subdir-named entry has to carry exactly the
 /// subdir defaults.
 fn subdir_baseline(subdir: Subdir) -> PixiPlatform {
+    platform_from_detected(subdir, baseline_virtual_packages(subdir))
+        .unwrap_or_else(|_| PixiPlatform::from_subdir(subdir))
+}
+
+/// The subdir defaults with `CONDA_OVERRIDE_*` on top, canonicalized.
+fn baseline_virtual_packages(subdir: Subdir) -> Vec<GenericVirtualPackage> {
     let mut virtual_packages = PixiPlatform::from_subdir(subdir)
         .declared_virtual_packages()
         .to_vec();
     apply_conda_overrides(&mut virtual_packages, subdir);
-    platform_from_detected(subdir, virtual_packages)
-        .unwrap_or_else(|_| PixiPlatform::from_subdir(subdir))
+    virtual_packages
+        .into_iter()
+        .map(canonicalize_detected)
+        .collect()
 }
 
 /// This machine as a platform targeting `subdir`.
@@ -323,10 +331,25 @@ fn subdir_baseline(subdir: Subdir) -> PixiPlatform {
 /// detection returns instead would leave every declared platform unsatisfied
 /// and make `PIXI_OVERRIDE_PLATFORM` useless for anything but a bare subdir.
 pub fn detect_host(subdir: Subdir) -> Result<PixiPlatform, HostDetectionError> {
+    detect_host_with_capabilities(subdir).map(|(platform, _)| platform)
+}
+
+/// [`detect_host`], plus the virtual packages the machine provides.
+///
+/// The two differ where the platform model is lossy: a machine that only
+/// *drops* a default (an empty `CONDA_OVERRIDE_*`) collapses to the subdir
+/// platform, which carries that default again. Callers asking "does this
+/// machine satisfy a requirement?" need the second value, so the override
+/// still removes the package there.
+pub fn detect_host_with_capabilities(
+    subdir: Subdir,
+) -> Result<(PixiPlatform, Vec<GenericVirtualPackage>), HostDetectionError> {
     if !machine_runs(subdir) {
-        return Ok(subdir_baseline(subdir));
+        return Ok((subdir_baseline(subdir), baseline_virtual_packages(subdir)));
     }
-    Ok(platform_from_detected(subdir, probe_machine(subdir)?)?)
+    let capabilities = probe_machine(subdir)?;
+    let platform = platform_from_detected(subdir, capabilities.clone())?;
+    Ok((platform, capabilities))
 }
 
 /// Whether this machine can run packages from `subdir`.
@@ -598,6 +621,15 @@ mod tests {
 
         assert!(!has_package(&packages, "__amdgpu"));
         assert!(!has_package(&packages, "__amdgpu_arch"));
+    }
+
+    #[test]
+    fn empty_override_of_a_default_is_not_restored_in_capabilities() {
+        let (_, capabilities) = temp_env::with_var("CONDA_OVERRIDE_GLIBC", Some(""), || {
+            detect_host_with_capabilities(Subdir::Linux64).unwrap()
+        });
+
+        assert!(!has_package(&capabilities, "__glibc"), "{capabilities:?}");
     }
 
     fn libc_package(name: &str, version: &str) -> GenericVirtualPackage {

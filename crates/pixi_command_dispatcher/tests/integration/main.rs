@@ -426,6 +426,68 @@ pub async fn instantiate_backend_with_compatible_api_version_honors_exclude_newe
         .expect("backend should instantiate when backend packages are explicitly overridden");
 }
 
+/// The solver never applies exclude-newer to installed records, so a hint
+/// that is newer than the cutoff must not be carried into the solution.
+#[tokio::test]
+pub async fn installed_hint_newer_than_exclude_newer_cutoff_is_dropped() {
+    let channel_dir =
+        cargo_workspace_dir().join("tests/data/channels/channels/multiple_versions_channel_1");
+    let channel: ChannelUrl = Url::from_directory_path(channel_dir).unwrap().into();
+    let tempdir = test_tempdir();
+    let dispatcher = CommandDispatcher::builder()
+        .with_cache_dirs(default_cache_dirs().with_workspace(to_abs_dir(tempdir.path())))
+        .with_executor(Executor::Serial)
+        .finish();
+
+    // On linux-64, package 0.1.0 is older than this cutoff and 0.2.0 newer.
+    let solve = |installed, exclude_newer| {
+        let (installed, installed_source_hints) = installed_with_hints(installed);
+        run_pixi_solve(
+            &dispatcher,
+            SolvePixiEnvironmentSpec {
+                dependencies: DependencyMap::from_iter([(
+                    PackageName::new_unchecked("package"),
+                    PixiSpec::any(),
+                )]),
+                installed,
+                installed_source_hints,
+                env_ref: EnvironmentRef::Ephemeral(EphemeralEnv::new(
+                    "test",
+                    EnvironmentSpec {
+                        channels: vec![channel.clone()],
+                        build_environment: BuildEnvironment::simple(Subdir::Linux64, vec![]),
+                        variants: VariantConfig::default(),
+                        exclude_newer,
+                        channel_priority: Default::default(),
+                    },
+                )),
+                ..empty_pixi_env_spec()
+            },
+        )
+    };
+    let package_version = |records: Vec<pixi_record::PixiRecord>| {
+        records
+            .into_iter()
+            .find(|r| r.package_record().name.as_normalized() == "package")
+            .unwrap()
+            .package_record()
+            .version
+            .to_string()
+    };
+
+    let unrestricted = solve(vec![], None).await.unwrap();
+    assert_eq!(package_version(unrestricted.clone()), "0.2.0");
+
+    let cutoff = ResolvedExcludeNewer::from_datetime("2026-01-12T15:07:39Z".parse().unwrap());
+    let records = solve(
+        unrestricted.into_iter().map(to_unresolved).collect(),
+        Some(cutoff),
+    )
+    .await
+    .unwrap();
+    assert_eq!(package_version(records), "0.1.0");
+}
+
 /// When two identical tool env instantiations are queued concurrently and the
 /// operation fails, the dispatcher sends the failure to one waiter and cancels
 /// the others. This verifies cancellation without network access.

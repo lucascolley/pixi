@@ -125,7 +125,10 @@ impl SolveCondaEnvironmentSpec {
         // Solving is a CPU-intensive task, we spawn this on a background task to allow
         // for more concurrency.
         let solve_result = tokio::task::spawn_blocking(move || {
-            let exclude_newer = self.exclude_newer.clone().map(Into::into);
+            let exclude_newer = self
+                .exclude_newer
+                .clone()
+                .map(rattler_solve::ExcludeNewer::from);
 
             // Determine for which records we have source records because those records should only
             //  be installed as source records.
@@ -298,6 +301,20 @@ impl SolveCondaEnvironmentSpec {
                 solvable_records.push(repo_data.iter().collect_vec());
             }
 
+            // The solver only applies `exclude_newer` to candidates, never to
+            // locked packages, so exclude locked packages that violate the
+            // cutoff here.
+            let mut excluded_candidates = self.excluded_candidates;
+            if let Some(exclude_newer) = &exclude_newer {
+                for record in &installed {
+                    if let Some(reason) = exclude_newer.exclusion_reason(record) {
+                        excluded_candidates
+                            .entry(record.url.clone())
+                            .or_insert_with(|| reason.to_string().into());
+                    }
+                }
+            }
+
             // Construct a solver task that we can start solving.
             let task = rattler_solve::SolverTask {
                 specs: source_match_specs
@@ -311,7 +328,7 @@ impl SolveCondaEnvironmentSpec {
                 exclude_newer,
                 strategy: self.strategy,
                 constraints: constrains_match_specs,
-                excluded_candidates: self.excluded_candidates,
+                excluded_candidates,
                 ..rattler_solve::SolverTask::from_iter(solvable_records)
             };
 

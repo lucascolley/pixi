@@ -628,7 +628,7 @@ table code {
 }
 
 /* TOC banner image */
-.md-sidebar--secondary::before {
+.md-sidebar--secondary .md-sidebar__inner::before {
   content: "";
   display: block;
   width: 100%;
@@ -643,7 +643,7 @@ table code {
 
 /* Adjust for small screens where TOC is hidden */
 @media screen and (max-width: 76.1875em) {
-  .md-sidebar--secondary::before {
+  .md-sidebar--secondary .md-sidebar__inner::before {
     display: none;
   }
 }
